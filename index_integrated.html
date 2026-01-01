@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Fluxmos Integrated Dashboard</title>
+<link href="https://cdn.jsdelivr.net/npm/chart.js" rel="stylesheet"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>body{font-family:Inter,system-ui,Arial;background:#071127;color:#e6eef6;margin:0}#map{height:60vh}#charts{display:flex;gap:12px;padding:12px}canvas{background:#0f1720;border-radius:8px;padding:8px}</style></head><body>
+<header style="padding:12px"><h2>Fluxmos Integrated — Fleet & EV Telemetry</h2></header>
+<div id="map"></div>
+<div id="charts"><canvas id="socChart" width=400 height=180></canvas><canvas id="powerChart" width=400 height=180></canvas></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+const WS = new URLSearchParams(location.search).get('ws') || 'ws://localhost:8080/telemetry';
+const key = new URLSearchParams(location.search).get('key') || '';
+const map = L.map('map').setView([37.773972, -122.431297], 12);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
+const markers = new Map();
+const socData = {}; // vehicleId -> last soc
+const socLabels = []; const socVals = [];
+const socCtx = document.getElementById('socChart').getContext('2d');
+const socChart = new Chart(socCtx, {type:'bar', data:{labels:[], datasets:[{label:'SOC %', data:[]}]}, options:{indexAxis:'y'}});
+const powerCtx = document.getElementById('powerChart').getContext('2d');
+const powerChart = new Chart(powerCtx, {type:'line', data:{labels:[], datasets:[{label:'kW', data:[]}]}});
+
+function updateCharts(){ socChart.data.labels = Object.keys(socData); socChart.data.datasets[0].data = Object.values(socData); socChart.update('none'); }
+function addPowerPoint(k){ const now = new Date().toLocaleTimeString(); powerChart.data.labels.push(now); powerChart.data.datasets[0].data.push(k); if(powerChart.data.labels.length>30){ powerChart.data.labels.shift(); powerChart.data.datasets[0].data.shift(); } powerChart.update('none'); }
+
+function connect(){
+  const url = WS + (key?('?key='+encodeURIComponent(key)):''); 
+  const ws = new WebSocket(url);
+  ws.onopen = ()=>console.log('ws open',url);
+  ws.onmessage = (evt)=>{
+    try{
+      const msg = JSON.parse(evt.data);
+      if(msg.engine !== 'EVS') return;
+      const id = msg.vehicleId || (msg.extra && msg.extra.vehicleId) || 'unknown';
+      const gps = msg.gps || msg.extra && msg.extra.gps;
+      const lat = gps && gps[0]; const lon = gps && gps[1];
+      if(lat && lon){
+        let marker = markers.get(id);
+        const popup = `Vehicle: ${id}<br>SOC: ${msg.soc || 'N/A'}%<br>Speed: ${msg.speed || 'N/A'} km/h`;
+        if(!marker){ marker = L.marker([lat,lon]).addTo(map).bindPopup(popup); markers.set(id, marker); } else { marker.setLatLng([lat,lon]).setPopupContent(popup); }
+      }
+      if(msg.soc!==undefined){ socData[id]=msg.soc; updateCharts(); }
+      if(msg.charging && msg.charging.kW) addPowerPoint(msg.charging.kW);
+    } catch(e){ console.warn(e); }
+  };
+  ws.onclose = ()=>{ console.log('ws closed, reconnecting in 2s'); setTimeout(connect,2000); };
+  ws.onerror = (e)=>{ console.warn('ws error', e); ws.close(); };
+}
+connect();
+</script></body></html>
